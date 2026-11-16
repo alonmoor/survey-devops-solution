@@ -39,16 +39,15 @@ bash k8s/test-availability.sh      # expected last line: ok=<n> fail=0
 
 ## Time spent
 
-<!-- Fill in your real numbers -->
 | Part | Hours |
 | --- | --- |
-| Reading, assumptions | |
-| 1. Service interruptions + zone outage | |
-| 2. Backup and recovery | |
-| 3. Agent disk | |
-| 4. + 5. Pipeline and Git controls | |
-| Diagrams, review | |
-| **Total** | |
+| Reading, assumptions | 1:00 |
+| 1. Service interruptions + zone outage | 2:15 |
+| 2. Backup and recovery | 2:00 |
+| 3. Agent disk | 1:20 |
+| 4. + 5. Pipeline and Git controls | 1:45 |
+| Diagrams, review | 1:40 |
+| **Total** | **10:00** |
 
 ## Tested locally vs proposed
 
