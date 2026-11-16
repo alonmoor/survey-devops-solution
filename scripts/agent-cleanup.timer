@@ -1,0 +1,12 @@
+# /etc/systemd/system/agent-cleanup.timer
+# Pairs with agent-cleanup.service (oneshot): docker builder prune until=48h,
+# docker image prune -a until=168h, old _work folders. Runs when builds are rare.
+[Unit]
+Description=Nightly Docker cleanup on the build agent
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

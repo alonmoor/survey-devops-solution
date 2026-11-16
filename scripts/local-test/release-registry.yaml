@@ -1,0 +1,31 @@
+# Problem 4 lab, part A: a small image registry (stands in for Artifact Registry).
+# hostNetwork on worker3: the registry listens on worker3's own port 5000, so
+#   - containerd on worker3 pulls "localhost:5000/..." (plain HTTP is allowed for localhost),
+#   - the build agent pushes to 192.168.1.62:5000 (listed under insecure-registries in agent-lab.yaml).
+# Lab only: no TLS, no login, images are lost when the pod is deleted.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: release-lab
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: registry
+  namespace: release-lab
+  labels:
+    app: registry
+spec:
+  nodeName: worker3
+  hostNetwork: true
+  containers:
+    - name: registry
+      image: registry:2.8.3
+      ports:
+        - containerPort: 5000
+      volumeMounts:
+        - name: data
+          mountPath: /var/lib/registry
+  volumes:
+    - name: data
+      emptyDir: {}

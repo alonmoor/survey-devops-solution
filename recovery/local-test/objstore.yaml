@@ -1,0 +1,43 @@
+# Local restore drill for Problem 2, files part: "Deleted files should be recoverable for seven days".
+# Cloud: GCS soft delete 7d (recovery/before-incident.sh). Lab: an S3-compatible object store
+# with bucket VERSIONING - a delete only adds a "delete marker", the old version stays and can be restored.
+# SeaweedFS is used because the MinIO image is no longer pullable from Docker Hub without login.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: objstore
+  namespace: recovery-lab
+  labels:
+    app: objstore
+spec:
+  # Same node as the DB lab; objects live on worker1's disk (hostPath), so they survive a pod restart.
+  nodeName: worker1
+  containers:
+    # The object store: master + volume + filer + S3 API (port 8333) in one process.
+    # No S3 identities are configured, so requests need no keys (lab only; no secrets in Git).
+    # Every bucket is a separate "collection" and gets its own volumes (7 at a time), so volume.max
+    # must leave room: 5 was used up by the default collection -> "No writable volumes" (fault #20).
+    # volumeSizeLimitMB=64 keeps each volume small; files only grow as data is written.
+    - name: seaweedfs
+      image: chrislusf/seaweedfs:4.50
+      args: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-volume.max=30", "-master.volumeSizeLimitMB=64"]
+      ports:
+        - containerPort: 8333
+      volumeMounts:
+        - name: data
+          mountPath: /data
+    # The client: AWS CLI (speaks S3). It just waits; we run commands in it with kubectl exec.
+    - name: cli
+      image: amazon/aws-cli:2.40.0
+      command: ["sh", "-c", "sleep infinity"]
+      env:
+        # Every "aws" command goes to the local store, not to AWS (same pod = localhost).
+        - name: AWS_ENDPOINT_URL
+          value: http://localhost:8333
+        - name: AWS_REGION
+          value: us-east-1
+  volumes:
+    - name: data
+      hostPath:
+        path: /srv/pg-lab/objstore
+        type: DirectoryOrCreate

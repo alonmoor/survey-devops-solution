@@ -1,0 +1,89 @@
+# Local lab for Problem 3: a "build agent" whose disk fills up ("No space left on device").
+# The cluster nodes run containerd without Docker, so the agent is Docker-in-Docker in a pod.
+# It gets its OWN small disk (a 4G ext4 file mounted as a loop device), so filling it
+# never touches the node's real disk. Same layout as the assignment:
+#   /disk/docker            = /var/lib/docker (Docker data root)
+#   /opt/ado-agent/_work    = the Azure DevOps agent work folders
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-lab
+---
+# Prevention test: the same settings as scripts/docker-daemon.json, but the build cache limit is
+# scaled to the lab disk (20GB of 100G = 20%; here 800MB of 4G).
+# insecure-registries: Problem 4 lab only - the registry on worker3 (release-registry.yaml) has no TLS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: docker-daemon
+  namespace: agent-lab
+data:
+  daemon.json: |
+    {
+      "log-driver": "json-file",
+      "log-opts": { "max-size": "10m", "max-file": "3" },
+      "builder": { "gc": { "enabled": true, "defaultKeepStorage": "800MB" } },
+      "insecure-registries": ["192.168.1.62:5000"]
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: build-agent
+  namespace: agent-lab
+  labels:
+    app: build-agent
+spec:
+  # Pinned: worker3 has the image and ran this lab fine; on worker2 the node went NotReady
+  # and the bare pod was evicted (fault #29).
+  nodeName: worker3
+  containers:
+    - name: agent
+      image: docker:29.9.0-dind
+      # Docker-in-Docker needs a privileged container (lab only; a real agent is a VM).
+      securityContext:
+        privileged: true
+      env:
+        # No TLS between the docker CLI and dockerd inside the same container (local socket only).
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          # 0. The dind image (Alpine) has no mkfs.ext4 -> "mkfs.ext4: not found" (fault #24).
+          #    e2fsprogs is the Alpine package that provides it.
+          apk add --no-cache e2fsprogs
+          # 1. A 4G file formatted as ext4 = the agent's "disk" (sparse: uses space only when written).
+          truncate -s 4G /scratch/disk.img
+          mkfs.ext4 -q -F /scratch/disk.img
+          mkdir -p /disk
+          mount -o loop /scratch/disk.img /disk
+          # 2. Same folders as on the real agent, all on that one small disk.
+          mkdir -p /disk/docker /disk/ado-agent/_work /opt
+          ln -sfn /disk/ado-agent /opt/ado-agent
+          # 3. The scripts call sudo; here we are already root, so sudo just runs the command.
+          printf '#!/bin/sh\nexec "$@"\n' > /usr/local/bin/sudo && chmod +x /usr/local/bin/sudo
+          # 4. Start Docker with its data on the small disk.
+          exec dockerd-entrypoint.sh --data-root=/disk/docker
+      # Ready only when dockerd answers. Without it the pod is Ready as soon as the container starts,
+      # while apk/mkfs/mount still run -> "failed to connect to the docker API" (fault #28).
+      readinessProbe:
+        exec:
+          command: ["docker", "info"]
+        periodSeconds: 3
+      volumeMounts:
+        - name: scratch
+          mountPath: /scratch
+        # dockerd reads /etc/docker/daemon.json at start. subPath = mount only this one file.
+        - name: daemon-config
+          mountPath: /etc/docker/daemon.json
+          subPath: daemon.json
+  volumes:
+    - name: daemon-config
+      configMap:
+        name: docker-daemon
+    # Holds only disk.img; deleted with the pod.
+    - name: scratch
+      emptyDir: {}

@@ -1,0 +1,14 @@
+flowchart TD
+  PR[PR to main] --> V{Build validation<br/>tests, image build, manifest check}
+  V -- fail --> X[Fix in the branch]
+  V -- pass --> R[Reviewer approves, merge]
+  R --> B[Build: tag = commit SHA<br/>record digest]
+  B --> A{Approval on environment<br/>survey-production}
+  A --> BK[On-demand backup<br/>record time]
+  BK --> M[Migration Job, expand only]
+  M --> D[kubectl set image by digest<br/>rollout status]
+  D --> T{Smoke test and error rate}
+  T -- ok --> OK[Done, tag run prod-deployed]
+  T -- fail --> C{Migration compatible<br/>with previous app?}
+  C -- yes --> RB[Redeploy previous digest]
+  C -- no --> FF[Fix forward or tested down-migration<br/>last resort: PITR clone]

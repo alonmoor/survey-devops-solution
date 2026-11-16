@@ -1,0 +1,28 @@
+# Problem 4 lab, part A: the "API" deployed the way the assignment describes it (line 73):
+# image tag "latest", no recorded digest. Later steps change it to a digest with kubectl set image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: release-lab
+spec:
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+    spec:
+      # The registry is reachable as localhost:5000 only on worker3.
+      nodeSelector:
+        kubernetes.io/hostname: worker3
+      containers:
+        - name: web
+          image: localhost:5000/demo:latest
+          # Pull on every start, so a pod gets whatever "latest" points to at that moment.
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080

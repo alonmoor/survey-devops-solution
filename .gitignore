@@ -1,0 +1,9 @@
+*.log
+load-result.txt
+soft-deleted.txt
+.env
+
+# personal lab journal and study notes (not part of the submission)
+lab-journal/
+*.docx
+~$*

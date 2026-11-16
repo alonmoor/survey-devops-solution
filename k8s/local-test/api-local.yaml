@@ -1,0 +1,118 @@
+# Local test copy of ../api-deployment.yaml for kubeadm or kind (no GCP).
+# Same rollout, probes, shutdown and PDB settings. Differences:
+#  - public python image + code from ConfigMap "survey-api-code" (no registry needed)
+#  - no BackendConfig / NEG annotations (GKE-only)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: survey
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: survey-api
+  namespace: survey
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: survey-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: survey-api
+    spec:
+      terminationGracePeriodSeconds: 45
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: survey-api
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: survey-api
+      containers:
+        - name: api
+          image: python:3.12-slim
+          command: ["sh", "-c"]
+          args:
+            - pip install --no-cache-dir -q fastapi uvicorn &&
+              exec uvicorn main:app --app-dir /app --host 0.0.0.0 --port 8000
+              --timeout-graceful-shutdown 25
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          startupProbe:
+            httpGet:
+              path: /healthz/live
+              port: http
+            periodSeconds: 5
+            # lab only: pip install at start took 3m12s on a slow link (measured),
+            # so allow up to 6 min. The real image is pre-built (see api-deployment.yaml).
+            failureThreshold: 72
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "15"]
+          volumeMounts:
+            - name: code
+              mountPath: /app
+      volumes:
+        - name: code
+          configMap:
+            name: survey-api-code
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: survey-api
+  namespace: survey
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: survey-api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: survey-api
+  namespace: survey
+spec:
+  selector:
+    app: survey-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

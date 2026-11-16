@@ -1,0 +1,78 @@
+# Azure DevOps Server 2022 - survey-api build and production release
+trigger:
+  branches:
+    include:
+      - main
+pr: none   # Azure Repos: PR validation runs through the "Build validation" branch policy
+
+pool:
+  name: gcp-linux-agents
+
+variables:
+  REGISTRY: me-west1-docker.pkg.dev/PROJECT_ID/survey
+  IMAGE: $(REGISTRY)/api
+  TAG: $(Build.SourceVersion)          # full Git commit SHA: one tag per commit, never reused
+
+stages:
+  - stage: Build
+    jobs:
+      - job: build
+        steps:
+          - checkout: self
+            clean: true
+          - script: |
+              set -euo pipefail
+              python3 -m pip install -r requirements-dev.txt
+              python3 -m pytest -q
+            displayName: Unit tests
+          - script: |
+              set -euo pipefail
+              gcloud auth configure-docker me-west1-docker.pkg.dev --quiet
+              docker build --pull -t "$(IMAGE):$(TAG)" .
+              docker push "$(IMAGE):$(TAG)"
+              REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$(IMAGE):$(TAG)")
+              echo "Built $REF"
+              echo "##vso[task.setvariable variable=imageRef;isOutput=true]$REF"
+              echo "$REF" > "$(Build.ArtifactStagingDirectory)/image-ref.txt"
+              docker image rm "$(IMAGE):$(TAG)" || true
+            name: push
+            displayName: Build and push immutable image
+          - publish: $(Build.ArtifactStagingDirectory)
+            artifact: release
+            displayName: Record image reference
+
+  - stage: Deploy_Production
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      imageRef: $[ stageDependencies.Build.build.outputs['push.imageRef'] ]
+    jobs:
+      - deployment: deploy_api
+        environment: survey-production   # Approvals + Branch control + Exclusive lock are set on this environment
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    set -euo pipefail
+                    # --- PSEUDOCODE: environment-specific commands ---
+                    # 1. Record what runs now (rollback target):
+                    #    kubectl -n survey get deploy survey-api \
+                    #      -o jsonpath='{.spec.template.spec.containers[0].image}' > previous-image.txt
+                    # 2. Safety point for the database:
+                    #    gcloud sql backups create --instance=survey-db --description="pre-$(Build.BuildNumber)"
+                    #    date -u +%Y-%m-%dT%H:%M:%SZ > pre-migration-time.txt   # PITR target if needed
+                    # 3. Run the migration as a Kubernetes Job using the SAME image $(imageRef)
+                    #    and wait for it to complete (fail the stage if it fails).
+                    # 4. Deploy by digest and record the version:
+                    #    kubectl -n survey set image deploy/survey-api api=$(imageRef)
+                    #    kubectl -n survey annotate deploy/survey-api \
+                    #      kubernetes.io/change-cause="build $(Build.BuildNumber) $(imageRef)" --overwrite
+                    #    kubectl -n survey rollout status deploy/survey-api --timeout=300s
+                    # 5. Smoke test through the load balancer; on failure (only if the migration is backward compatible):
+                    #    kubectl -n survey set image deploy/survey-api api=$(cat previous-image.txt)
+                    #    (the recorded digest, not 'rollout undo': tested locally, undo with a moving tag pulls the new image)
+                    echo "Deploying $(imageRef)"
+                  displayName: Migrate and deploy (pseudocode)
+                - script: echo "##vso[build.addbuildtag]prod-deployed"
+                  displayName: Tag run as deployed

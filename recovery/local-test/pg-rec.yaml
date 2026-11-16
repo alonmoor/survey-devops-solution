@@ -1,0 +1,63 @@
+# Local restore drill for Problem 2, part 2: the "clone".
+# A NEW PostgreSQL (never over prod) built from the base backup plus the archived WAL,
+# replayed up to a point in time just before the mistake.
+# Cloud equivalent: gcloud sql instances clone survey-db survey-db-rec --point-in-time=...
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pg-rec
+  namespace: recovery-lab
+  labels:
+    app: pg-rec
+spec:
+  # Same node as pg-prod: the base backup and the WAL archive are on worker1's disk.
+  nodeName: worker1
+  initContainers:
+    # Build the clone's data directory: copy the backup, then tell PostgreSQL to recover to a time.
+    - name: prepare-recovery
+      image: postgres:16
+      env:
+        # Point in time to recover to: t_before_mistake from the drill (UTC).
+        - name: TARGET_TIME
+          value: "2026-11-15 19:08:34.929102+00"
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          # Start clean every time (only the clone folder, never prod-data or the archive).
+          rm -rf /lab/rec-data
+          mkdir -p /lab/rec-data
+          # 1. Copy the base backup ("daily backup") as the clone's data directory.
+          cp -a /lab/backup/base /lab/rec-data/pgdata
+          # 2. recovery.signal = "start in targeted recovery mode, then become a normal server".
+          touch /lab/rec-data/pgdata/recovery.signal
+          # 3. Where to read the archived WAL, where to stop, and what to do at the stop point.
+          echo "restore_command = 'cp /lab/archive/%f %p'" >> /lab/rec-data/pgdata/postgresql.auto.conf
+          echo "recovery_target_time = '$TARGET_TIME'"     >> /lab/rec-data/pgdata/postgresql.auto.conf
+          echo "recovery_target_action = 'promote'"        >> /lab/rec-data/pgdata/postgresql.auto.conf
+          # 4. PostgreSQL refuses a data directory that is not owned by it with mode 700.
+          chown -R 999:999 /lab/rec-data
+          chmod 700 /lab/rec-data/pgdata
+      volumeMounts:
+        - name: lab
+          mountPath: /lab
+  containers:
+    - name: postgres
+      image: postgres:16
+      env:
+        # Lab only: no password; access only through kubectl exec. No secrets in Git.
+        - name: POSTGRES_HOST_AUTH_METHOD
+          value: trust
+        # The prepared folder. It already has PG_VERSION, so the entrypoint skips initdb.
+        - name: PGDATA
+          value: /lab/rec-data/pgdata
+      # No archive_mode here: the clone must not write into prod's WAL archive.
+      volumeMounts:
+        - name: lab
+          mountPath: /lab
+  volumes:
+    - name: lab
+      hostPath:
+        path: /srv/pg-lab
+        type: Directory

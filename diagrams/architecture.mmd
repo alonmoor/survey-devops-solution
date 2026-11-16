@@ -1,0 +1,32 @@
+flowchart LR
+  U([Users]) -->|HTTPS| LB[Global HTTPS Load Balancer]
+  subgraph ONP[On-premises]
+    ADO[Azure DevOps Server 2022<br/>Git, pipelines, approvals]
+  end
+  subgraph GCP[GCP project, VPC, region me-west1]
+    subgraph GKE[GKE private cluster, nodes in zones a, b, c]
+      WEB[web x3<br/>one per zone]
+      API[api x3<br/>one per zone, PDB]
+      WRK[worker x2<br/>two zones]
+    end
+    subgraph SQL[Cloud SQL PostgreSQL HA, private IP]
+      P[(primary, zone a)]
+      S[(standby, zone b)]
+    end
+    GCS[(Cloud Storage bucket<br/>regional, soft delete 7d)]
+    AR[Artifact Registry<br/>immutable tags]
+    SM[Secret Manager]
+    AG[Agent VM, Ubuntu<br/>attached service account]
+  end
+  LB -->|NEG + readiness| WEB
+  LB -->|NEG + readiness| API
+  P -.->|synchronous replication| S
+  API -->|private IP| P
+  WRK -->|private IP| P
+  API -->|workload identity| GCS
+  WRK -->|workload identity| GCS
+  API -->|workload identity| SM
+  GKE -->|pull by digest| AR
+  AG <-->|agent polls jobs, HTTPS over site-to-site VPN| ADO
+  AG -->|docker push| AR
+  AG -->|kubectl, private GKE endpoint| GKE

@@ -1,0 +1,45 @@
+#!/bin/sh
+# Problem 5 lab: a server-side git hook that plays the role of the Azure DevOps branch policies on main.
+# Git runs it on the server before it updates any branch; a non-zero exit rejects the whole push.
+# stdin: one line per branch being pushed: "<old-sha> <new-sha> <ref>".
+zero=0000000000000000000000000000000000000000        # sha used for "branch does not exist"
+fail=0
+while read -r old new ref; do
+  case "$ref" in
+    refs/heads/feature/*|refs/heads/hotfix/*)
+      # Work branches: anyone may push (like pushing a branch for a PR).
+      echo "policy: $ref accepted (work branch)"
+      ;;
+    refs/heads/main)
+      # Nobody may delete main.
+      if [ "$new" = "$zero" ]; then
+        echo "policy: REJECTED - deleting main is not allowed"; fail=1; continue
+      fi
+      # No force push: the old main must be part of the new history.
+      if [ "$old" != "$zero" ] && ! git merge-base --is-ancestor "$old" "$new"; then
+        echo "policy: REJECTED - force push to main is not allowed"; fail=1; continue
+      fi
+      # "Pull request": the commit must already be on a feature/* or hotfix/* branch on the server.
+      if [ -z "$(git for-each-ref --contains "$new" --format='%(refname)' refs/heads/feature refs/heads/hotfix)" ]; then
+        echo "policy: REJECTED - direct push to main; push a feature/* or hotfix/* branch first (PR)"; fail=1; continue
+      fi
+      # "Build validation": every shell script in the new main must pass 'bash -n' (syntax check).
+      bad=0
+      for f in $(git ls-tree -r --name-only "$new" | grep '\.sh$'); do
+        if ! git show "$new:$f" | bash -n; then
+          echo "policy: $f fails bash -n"; bad=1
+        fi
+      done
+      if [ "$bad" -ne 0 ]; then
+        echo "policy: REJECTED - build validation failed"; fail=1
+      else
+        echo "policy: main updated to $(git rev-parse --short "$new") (branch + validation passed)"
+      fi
+      ;;
+    *)
+      # Any other branch name breaks the naming rule.
+      echo "policy: REJECTED - $ref; use feature/* or hotfix/*"; fail=1
+      ;;
+  esac
+done
+exit "$fail"

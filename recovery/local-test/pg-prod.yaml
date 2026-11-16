@@ -1,0 +1,54 @@
+# Local restore drill for Problem 2 (synthetic data only).
+# "prod" PostgreSQL that copies every finished WAL file to an archive.
+# This is the same mechanism Cloud SQL uses for point-in-time recovery (PITR).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: recovery-lab
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pg-prod
+  namespace: recovery-lab
+  labels:
+    app: pg-prod
+spec:
+  # Pin to one node: the data, base backup and WAL archive live on that node's disk (hostPath).
+  nodeName: worker1
+  initContainers:
+    # The archive and backup folders must belong to the postgres user (uid 999 in the image).
+    - name: fix-perms
+      image: busybox:1.36
+      command: ["sh", "-c", "mkdir -p /lab/archive /lab/backup && chown -R 999:999 /lab/archive /lab/backup"]
+      volumeMounts:
+        - name: lab
+          mountPath: /lab
+  containers:
+    - name: postgres
+      image: postgres:16
+      env:
+        # Lab only: no password at all (connections come only through kubectl exec). No secrets in Git.
+        - name: POSTGRES_HOST_AUTH_METHOD
+          value: trust
+        # Data directory on the hostPath, so a second pod (the "clone") can use the same archive.
+        - name: PGDATA
+          value: /lab/prod-data/pgdata
+      # Arguments that start with "-" are passed to the postgres server by the image entrypoint.
+      args:
+        - "-c"
+        - "wal_level=replica"          # WAL keeps enough detail for backups and PITR
+        - "-c"
+        - "archive_mode=on"            # copy every finished WAL file
+        - "-c"
+        - "archive_command=test ! -f /lab/archive/%f && cp %p /lab/archive/%f"   # never overwrite an archived file
+        - "-c"
+        - "archive_timeout=60"         # close a WAL file at least every 60 s, so at most ~1 min of changes is not archived (RPO)
+      volumeMounts:
+        - name: lab
+          mountPath: /lab
+  volumes:
+    - name: lab
+      hostPath:
+        path: /srv/pg-lab
+        type: DirectoryOrCreate
